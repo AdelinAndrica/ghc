@@ -1,0 +1,64 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-upload:
+    name: build (${{ matrix.platform.name }})
+    runs-on: ${{ matrix.platform.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - name: windows-x86_64
+            os: windows-latest
+            artifact: ghc.exe
+          - name: linux-x86_64
+            os: ubuntu-latest
+            artifact: ghc
+          - name: macos-x86_64
+            os: macos-latest
+            artifact: ghc
+
+    steps:
+      - uses: actions/checkout@v5
+
+      # Install toolchain (works across runners)
+      - uses: dtolnay/rust-toolchain@stable
+
+      # Cache cargo/target for faster builds
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build (release)
+        run: cargo build --release
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item target\release\ghc.exe dist\
+          Compress-Archive -Path dist\ghc.exe -DestinationPath ghc-${{ matrix.platform.name }}.zip -Force
+
+      - name: Package (Linux/macOS)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp target/release/ghc dist/
+          chmod +x dist/ghc
+          tar -czf ghc-${{ matrix.platform.name }}.tar.gz -C dist ghc
+
+      # Create/append assets to the GitHub Release for this tag
+      - name: Upload assets to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ghc-*.zip
+            ghc-*.tar.gz
