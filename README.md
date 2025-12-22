@@ -1,78 +1,101 @@
 # ghc — Interactive GitHub Repo Cloner
 
-`ghc` is a fast, minimal terminal UI (TUI) that lets you interactively browse and clone your GitHub repositories using arrow keys, search, and Enter.
+`ghc` is a fast, terminal-based tool that lets you **interactively browse and clone your GitHub repositories**.
 
-No URLs. No copy–paste. Just select and clone.
+No URLs.
+No copy–paste.
+Just search, select, and clone.
 
 ---
 
 ## Features
 
-- Interactive terminal UI (arrow keys + Enter)
-- Live search by name and description
-- Shows all repositories you have access to (personal + organizations)
+- Interactive TUI (arrow keys + Enter)
+- Live search across repository names and descriptions
+- Lists all repositories you have access to (personal + organizations)
 - HTTPS or SSH cloning
+- No GitHub CLI (`gh`) required
 - Single native binary
-- No runtime dependencies
-- Cross-platform (Windows, macOS, Linux)
-
----
-
-## Requirements
-
-- Git
-- GitHub CLI (`gh`)
-
----
-
-## Authentication (one-time)
-
-`ghc` reuses your GitHub CLI authentication.
-
-```bash
-gh auth login
-```
-
-Alternatively, set a token manually:
-
-```bash
-setx GITHUB_TOKEN ghp_xxxxxxxxxxxxxxxxxxxx
-```
+- Cross-platform: Windows, macOS, Linux
 
 ---
 
 ## Installation
 
-### Prebuilt Binary (Recommended)
+### Windows (Scoop)
 
-1. Download the binary for your OS from Releases
-2. Place it in a directory on your PATH
+```powershell
+scoop bucket add ghc https://github.com/AdelinAndrica/ghc-scoop
+scoop install ghc
+```
 
-Example (Windows):
+Upgrade later with:
 
-```text
-C:\Users\<you>\bin\ghc.exe
+```powershell
+scoop update ghc
 ```
 
 ---
 
-### Build from Source (Rust)
+### macOS / Linux (Homebrew)
 
 ```bash
-git clone https://github.com/<your-username>/ghc
-cd ghc
-cargo build --release
+brew tap AdelinAndrica/ghc
+brew install ghc
 ```
 
-Copy the binary to your PATH:
+Upgrade later with:
 
 ```bash
-copy target\release\ghc.exe %USERPROFILE%\bin\
+brew upgrade ghc
+```
+
+---
+
+### Manual install (any platform)
+
+Download the appropriate binary from
+[https://github.com/AdelinAndrica/ghc/releases](https://github.com/AdelinAndrica/ghc/releases)
+
+Place it somewhere on your `PATH`.
+
+---
+
+## Authentication
+
+`ghc` uses **GitHub OAuth Device Flow**, recommended for CLI tools.
+
+Run once:
+
+```bash
+ghc login
+```
+
+You will:
+
+1. Open a GitHub URL in your browser
+2. Enter a short verification code
+3. Approve access
+
+After that, `ghc` works without further setup.
+
+To log out:
+
+```bash
+ghc logout
+```
+
+To check auth status:
+
+```bash
+ghc auth-status
 ```
 
 ---
 
 ## Usage
+
+Run:
 
 ```bash
 ghc
@@ -80,26 +103,25 @@ ghc
 
 ### Controls
 
-- ↑ / ↓ — Navigate
-- Type — Filter repositories
-- Backspace — Delete filter character
-- Enter — Clone selected repository
-- Esc — Exit
-- Ctrl+C — Exit immediately
+- ↑ / ↓ — move selection
+- Type — filter repositories
+- Backspace — delete filter character
+- Enter — clone selected repository
+- Esc / Ctrl+C — quit
 
-The selected repository is cloned into the current directory.
+Repositories are cloned into the current directory.
 
 ---
 
-### Clone using SSH
+### Options
+
+Clone using SSH instead of HTTPS:
 
 ```bash
 ghc --ssh
 ```
 
----
-
-### Show only owned repositories
+Show only repositories you own:
 
 ```bash
 ghc --owned
@@ -107,11 +129,34 @@ ghc --owned
 
 ---
 
-## Troubleshooting
+## Requirements
 
-- Verify GitHub authentication: `gh auth status`
-- Verify Git installation: `git --version`
-- Verify binary location: `where ghc` (Windows) / `which ghc` (Unix)
+- Git (must be installed and available on PATH)
+
+---
+
+## What `ghc` does (and does not)
+
+**Does:**
+
+- Lists your GitHub repositories
+- Runs `git clone` on the selected repo
+
+**Does not:**
+
+- Modify repositories
+- Track usage or analytics
+- Run background services
+- Replace Git
+
+---
+
+## Security & Privacy
+
+- Uses GitHub’s official OAuth Device Flow
+- OAuth Client ID is public (as designed)
+- Access token is stored locally on your machine
+- No telemetry or external servers involved
 
 ---
 

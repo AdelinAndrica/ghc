@@ -9,34 +9,48 @@ permissions:
   contents: write
 
 jobs:
-  build-and-upload:
-    name: build (${{ matrix.platform.name }})
-    runs-on: ${{ matrix.platform.os }}
+  build:
+    name: build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        platform:
-          - name: windows-x86_64
-            os: windows-latest
-            artifact: ghc.exe
-          - name: linux-x86_64
-            os: ubuntu-latest
-            artifact: ghc
-          - name: macos-x86_64
-            os: macos-latest
-            artifact: ghc
+        include:
+          - os: ubuntu-latest
+            target: linux-x86_64
+            asset: ghc-linux-x86_64.tar.gz
+          - os: windows-latest
+            target: windows-x86_64
+            asset: ghc-windows-x86_64.zip
+          - os: macos-latest
+            target: macos-x86_64
+            asset: ghc-macos-x86_64.tar.gz
 
     steps:
       - uses: actions/checkout@v5
-
-      # Install toolchain (works across runners)
       - uses: dtolnay/rust-toolchain@stable
-
-      # Cache cargo/target for faster builds
       - uses: Swatinem/rust-cache@v2
 
-      - name: Build (release)
+      - name: Build
         run: cargo build --release
+
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp target/release/ghc dist/ghc
+          chmod +x dist/ghc
+          tar -czf ghc-linux-x86_64.tar.gz -C dist ghc
+
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp target/release/ghc dist/ghc
+          chmod +x dist/ghc
+          tar -czf ghc-macos-x86_64.tar.gz -C dist ghc
 
       - name: Package (Windows)
         if: runner.os == 'Windows'
@@ -44,21 +58,118 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           Copy-Item target\release\ghc.exe dist\
-          Compress-Archive -Path dist\ghc.exe -DestinationPath ghc-${{ matrix.platform.name }}.zip -Force
+          Compress-Archive -Path dist\ghc.exe -DestinationPath ghc-windows-x86_64.zip -Force
 
-      - name: Package (Linux/macOS)
-        if: runner.os != 'Windows'
-        shell: bash
-        run: |
-          mkdir -p dist
-          cp target/release/ghc dist/
-          chmod +x dist/ghc
-          tar -czf ghc-${{ matrix.platform.name }}.tar.gz -C dist ghc
-
-      # Create/append assets to the GitHub Release for this tag
-      - name: Upload assets to GitHub Release
+      - name: Upload asset to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
             ghc-*.zip
             ghc-*.tar.gz
+
+  update-package-managers:
+    name: update scoop + homebrew
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Compute version + asset URLs
+        id: meta
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF_NAME}"      # v0.1.0
+          VER="${TAG#v}"                # 0.1.0
+          REPO="AdelinAndrica/ghc"
+
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "ver=$VER" >> $GITHUB_OUTPUT
+          echo "repo=$REPO" >> $GITHUB_OUTPUT
+
+          echo "win_url=https://github.com/$REPO/releases/download/$TAG/ghc-windows-x86_64.zip" >> $GITHUB_OUTPUT
+          echo "mac_url=https://github.com/$REPO/releases/download/$TAG/ghc-macos-x86_64.tar.gz" >> $GITHUB_OUTPUT
+          echo "lin_url=https://github.com/$REPO/releases/download/$TAG/ghc-linux-x86_64.tar.gz" >> $GITHUB_OUTPUT
+
+      - name: Download assets + sha256
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL -o ghc-windows-x86_64.zip "${{ steps.meta.outputs.win_url }}"
+          curl -fsSL -o ghc-macos-x86_64.tar.gz "${{ steps.meta.outputs.mac_url }}"
+          curl -fsSL -o ghc-linux-x86_64.tar.gz "${{ steps.meta.outputs.lin_url }}"
+
+          sha256sum ghc-windows-x86_64.zip | awk '{print $1}' > win.sha
+          sha256sum ghc-macos-x86_64.tar.gz | awk '{print $1}' > mac.sha
+          sha256sum ghc-linux-x86_64.tar.gz | awk '{print $1}' > lin.sha
+
+      - name: Update Scoop bucket (ghc-scoop)
+        shell: bash
+        run: |
+          set -euo pipefail
+          VER="${{ steps.meta.outputs.ver }}"
+          WIN_URL="${{ steps.meta.outputs.win_url }}"
+          WIN_SHA="$(cat win.sha)"
+
+          git clone "https://x-access-token:${{ secrets.REPO_PUSH_TOKEN }}@github.com/AdelinAndrica/ghc-scoop.git" scoop
+          cd scoop
+
+          python - <<PY
+          import json
+          path = "bucket/ghc.json"
+          with open(path, "r", encoding="utf-8") as f:
+              data = json.load(f)
+
+          data["version"] = "${VER}"
+          data["homepage"] = "https://github.com/AdelinAndrica/ghc"
+          data["architecture"]["64bit"]["url"] = "${WIN_URL}"
+          data["architecture"]["64bit"]["hash"] = "${WIN_SHA}"
+
+          with open(path, "w", encoding="utf-8") as f:
+              json.dump(data, f, indent=2)
+              f.write("\n")
+          PY
+
+                    git config user.name "ghc-bot"
+                    git config user.email "ghc-bot@users.noreply.github.com"
+                    git add bucket/ghc.json
+                    git commit -m "ghc ${VER}" || exit 0
+                    git push
+
+                - name: Update Homebrew tap (homebrew-ghc)
+                  shell: bash
+                  run: |
+                    set -euo pipefail
+                    VER="${{ steps.meta.outputs.ver }}"
+                    MAC_URL="${{ steps.meta.outputs.mac_url }}"
+                    LIN_URL="${{ steps.meta.outputs.lin_url }}"
+                    MAC_SHA="$(cat mac.sha)"
+                    LIN_SHA="$(cat lin.sha)"
+
+                    git clone "https://x-access-token:${{ secrets.REPO_PUSH_TOKEN }}@github.com/AdelinAndrica/homebrew-ghc.git" brew
+                    cd brew
+
+                    python - <<PY
+          import re, pathlib
+          p = pathlib.Path("Formula/ghc.rb")
+          s = p.read_text(encoding="utf-8")
+
+          s = re.sub(r'^\s*version\s+"[^"]+"', f'  version "{VER}"', s, flags=re.M)
+
+          # mac block
+          s = re.sub(r'^\s*url\s+"[^"]*ghc-macos-x86_64\.tar\.gz"', f'    url "{MAC_URL}"', s, flags=re.M)
+          matches = list(re.finditer(r'^\s*sha256\s+"[^"]+"', s, flags=re.M))
+          if len(matches) < 2:
+              raise SystemExit("Expected two sha256 entries in Formula/ghc.rb")
+          s = s[:matches[0].start()] + f'    sha256 "{MAC_SHA}"' + s[matches[0].end():]
+
+          # linux block
+          s = re.sub(r'^\s*url\s+"[^"]*ghc-linux-x86_64\.tar\.gz"', f'    url "{LIN_URL}"', s, flags=re.M)
+          matches = list(re.finditer(r'^\s*sha256\s+"[^"]+"', s, flags=re.M))
+          s = s[:matches[1].start()] + f'    sha256 "{LIN_SHA}"' + s[matches[1].end():]
+
+          p.write_text(s, encoding="utf-8")
+          PY
+
+          git config user.name "ghc-bot"
+          git config user.email "ghc-bot@users.noreply.github.com"
+          git add Formula/ghc.rb
+          git commit -m "ghc ${VER}" || exit 0
+          git push
