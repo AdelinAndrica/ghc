@@ -1,0 +1,2 @@
+[alias]
+bin = "run --quiet --package ghc --bin ghc -- --install-helper"
