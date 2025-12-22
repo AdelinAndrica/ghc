@@ -25,6 +25,11 @@ Just search, select, and clone.
 ### Windows (Scoop)
 
 ```powershell
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+Invoke-RestMethod -Uri https://get.scoop.sh | Invoke-Expression
+```
+
+```powershell
 scoop bucket add ghc https://github.com/AdelinAndrica/ghc-scoop
 scoop install ghc
 ```
