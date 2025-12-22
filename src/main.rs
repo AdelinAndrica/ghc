@@ -1,7 +1,6 @@
 use anyhow::{Context, Result, anyhow};
-use crossterm::event::KeyEventKind;
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
+    event::{self, Event, KeyCode, KeyModifiers},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -14,7 +13,7 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, Paragraph},
 };
 use reqwest::header::{ACCEPT, AUTHORIZATION, HeaderMap, HeaderValue, USER_AGENT};
-use std::{io, process::Command};
+use std::io;
 
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
@@ -25,7 +24,11 @@ use tokio::time::{Duration, sleep};
 use clap::{Parser, Subcommand};
 
 #[derive(Parser, Debug)]
-#[command(name = "ghc", about = "Interactive GitHub repo picker + clone")]
+#[command(
+    name = "ghc",
+    about = "Interactive GitHub repo picker + clone",
+    version
+)]
 struct Args {
     #[command(subcommand)]
     cmd: Option<Cmd>,
@@ -37,6 +40,10 @@ struct Args {
     /// Only show repos owned by the authenticated user
     #[arg(long)]
     owned: bool,
+
+    /// Include archived repositories (archived repos are hidden by default)
+    #[arg(long)]
+    archived: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -70,6 +77,58 @@ fn github_client_id() -> String {
         .unwrap_or_else(|| DEFAULT_GITHUB_CLIENT_ID.to_string())
 }
 
+#[derive(Debug, Deserialize)]
+struct GitHubUser {
+    _login: String,
+}
+
+fn github_client(token: &str) -> Result<(reqwest::Client, HeaderMap)> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .context("Failed to initialize HTTP client")?;
+
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        AUTHORIZATION,
+        HeaderValue::from_str(&format!("Bearer {}", token))?,
+    );
+    headers.insert(USER_AGENT, HeaderValue::from_static("ghc-cli"));
+    headers.insert(
+        ACCEPT,
+        HeaderValue::from_static("application/vnd.github+json"),
+    );
+
+    Ok((client, headers))
+}
+
+async fn validate_token(token: &str) -> Result<()> {
+    let (client, headers) = github_client(token)?;
+
+    let resp = client
+        .get("https://api.github.com/user")
+        .headers(headers.clone())
+        .send()
+        .await
+        .with_context(
+            || "Failed to contact https://api.github.com/user (network/DNS/proxy/firewall?)",
+        )?;
+
+    if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+        return Err(anyhow!(
+            "Authentication expired/invalid. Run `ghc login` again."
+        ));
+    }
+
+    resp.error_for_status()
+        .context("GitHub API returned an error for /user")?
+        .json::<GitHubUser>()
+        .await
+        .context("Failed to parse GitHub /user response")?;
+
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
@@ -92,9 +151,11 @@ async fn main() -> Result<()> {
         None => {}
     }
 
-    let token = resolve_token()?; // updated to no longer require `gh`
+    let token = resolve_token()?;
+    validate_token(&token).await?; // ✅ v0.0.4
     let repos = fetch_repos(&token, args.owned).await?;
-    let selection = run_tui(repos)?;
+    let selection = run_tui(repos, args.archived)?; // args.archived = include archived
+
     if let Some(repo) = selection {
         let url = if args.ssh {
             repo.ssh_url
@@ -195,13 +256,7 @@ fn resolve_token() -> anyhow::Result<String> {
 }
 
 async fn fetch_repos(token: &str, owned_only: bool) -> Result<Vec<Repo>> {
-    let client = reqwest::Client::new();
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        AUTHORIZATION,
-        HeaderValue::from_str(&format!("Bearer {}", token))?,
-    );
-    headers.insert(USER_AGENT, HeaderValue::from_static("ghc-cli"));
+    let (client, headers) = github_client(token)?;
 
     let mut page = 1u32;
     let mut all: Vec<Repo> = Vec::new();
@@ -209,25 +264,49 @@ async fn fetch_repos(token: &str, owned_only: bool) -> Result<Vec<Repo>> {
     loop {
         let mut url =
             format!("https://api.github.com/user/repos?per_page=100&page={page}&sort=updated");
-        // owned_only: use affiliation=owner
         if owned_only {
             url.push_str("&affiliation=owner");
         } else {
-            // includes owner, org member, collaborations
             url.push_str("&affiliation=owner,collaborator,organization_member");
         }
 
-        let batch: Vec<Repo> = client
-            .get(&url)
-            .headers(headers.clone())
-            .send()
-            .await
-            .context("Failed to call GitHub API")?
-            .error_for_status()
-            .context("GitHub API returned an error")?
-            .json()
-            .await
-            .context("Failed to parse GitHub API response")?;
+        let mut attempt = 0u32;
+        let batch: Vec<Repo> = loop {
+            attempt += 1;
+
+            let resp = client.get(&url).headers(headers.clone()).send().await;
+
+            let resp = match resp {
+                Ok(r) => r,
+                Err(e) => {
+                    let transient = e.is_connect() || e.is_timeout() || e.is_request();
+                    if transient && attempt < 3 {
+                        sleep(Duration::from_millis(600 * attempt as u64)).await;
+                        continue;
+                    }
+                    return Err(anyhow!(
+                        "Failed to contact GitHub API (DNS/proxy/firewall?). Details: {e}"
+                    ));
+                }
+            };
+
+            if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+                return Err(anyhow!(
+                    "Authentication expired/invalid. Run `ghc login` again."
+                ));
+            }
+
+            let resp = resp
+                .error_for_status()
+                .context("GitHub API returned an error")?;
+
+            let parsed = resp
+                .json::<Vec<Repo>>()
+                .await
+                .context("Failed to parse GitHub API response")?;
+
+            break parsed;
+        };
 
         if batch.is_empty() {
             break;
@@ -240,7 +319,7 @@ async fn fetch_repos(token: &str, owned_only: bool) -> Result<Vec<Repo>> {
     Ok(all)
 }
 
-fn run_tui(repos: Vec<Repo>) -> Result<Option<Repo>> {
+fn run_tui(repos: Vec<Repo>, include_archived: bool) -> Result<Option<Repo>> {
     enable_raw_mode().context("enable_raw_mode failed")?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen).context("EnterAlternateScreen failed")?;
@@ -260,7 +339,7 @@ fn run_tui(repos: Vec<Repo>) -> Result<Option<Repo>> {
     loop {
         if needs_redraw {
             // recompute filtered list
-            filtered_indices = filter_indices(&repos, &query);
+            filtered_indices = filter_indices(&repos, &query, include_archived);
 
             if filtered_indices.is_empty() {
                 selected_idx = 0;
@@ -304,7 +383,7 @@ fn run_tui(repos: Vec<Repo>) -> Result<Option<Repo>> {
                         if r.fork {
                             meta.push_str(" ⑂");
                         }
-                        if r.archived {
+                        if include_archived && r.archived {
                             meta.push_str(" 📦");
                         }
 
@@ -319,9 +398,14 @@ fn run_tui(repos: Vec<Repo>) -> Result<Option<Repo>> {
 
                 let list = List::new(items)
                     .block(Block::default().borders(Borders::ALL).title(format!(
-                        "Repositories ({}/{})",
+                        "Repositories ({}/{}){}",
                         filtered_indices.len(),
-                        repos.len()
+                        repos.len(),
+                        if include_archived {
+                            ""
+                        } else {
+                            " • archived hidden"
+                        }
                     )))
                     .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
                     .highlight_symbol("➤ ");
@@ -424,16 +508,21 @@ fn run_tui(repos: Vec<Repo>) -> Result<Option<Repo>> {
     Ok(result)
 }
 
-fn filter_indices(repos: &[Repo], query: &str) -> Vec<usize> {
+fn filter_indices(repos: &[Repo], query: &str, include_archived: bool) -> Vec<usize> {
     let q = query.trim().to_lowercase();
-    if q.is_empty() {
-        return (0..repos.len()).collect();
-    }
 
     repos
         .iter()
         .enumerate()
         .filter_map(|(i, r)| {
+            if !include_archived && r.archived {
+                return None;
+            }
+
+            if q.is_empty() {
+                return Some(i);
+            }
+
             let name = r.full_name.to_lowercase();
             let desc = r.description.clone().unwrap_or_default().to_lowercase();
             if name.contains(&q) || desc.contains(&q) {
@@ -457,7 +546,9 @@ struct DeviceCodeResponse {
 #[derive(Debug, Deserialize)]
 struct TokenOkResponse {
     access_token: String,
+    #[allow(dead_code)]
     token_type: String,
+    #[allow(dead_code)]
     scope: String,
 }
 
@@ -477,7 +568,10 @@ or set GHC_GITHUB_CLIENT_ID for this session."
         ));
     }
 
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .context("Failed to initialize HTTP client")?;
 
     // 1) Request device code
     let mut headers = HeaderMap::new();
