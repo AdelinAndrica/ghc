@@ -79,7 +79,8 @@ fn github_client_id() -> String {
 
 #[derive(Debug, Deserialize)]
 struct GitHubUser {
-    _login: String,
+    #[allow(dead_code)]
+    login: String,
 }
 
 fn github_client(token: &str) -> Result<(reqwest::Client, HeaderMap)> {
