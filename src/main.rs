@@ -60,6 +60,16 @@ struct Repo {
     private: bool,
 }
 
+const DEFAULT_GITHUB_CLIENT_ID: &str = "Ov23liadwk2DQHKgANja";
+
+fn github_client_id() -> String {
+    std::env::var("GHC_GITHUB_CLIENT_ID")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| DEFAULT_GITHUB_CLIENT_ID.to_string())
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
@@ -458,9 +468,14 @@ struct TokenErrResponse {
 }
 
 async fn login_device_flow() -> anyhow::Result<()> {
-    let client_id = std::env::var("GHC_GITHUB_CLIENT_ID").map_err(|_| {
-        anyhow::anyhow!("Missing env var GHC_GITHUB_CLIENT_ID (GitHub OAuth App client id).")
-    })?;
+    let client_id = github_client_id();
+
+    if client_id.trim().is_empty() || client_id == "PASTE_YOUR_CLIENT_ID_HERE" {
+        return Err(anyhow::anyhow!(
+            "OAuth client id is not configured. Set DEFAULT_GITHUB_CLIENT_ID in source \
+or set GHC_GITHUB_CLIENT_ID for this session."
+        ));
+    }
 
     let client = reqwest::Client::new();
 
@@ -485,6 +500,8 @@ async fn login_device_flow() -> anyhow::Result<()> {
 
     println!("Open this URL in your browser:");
     println!("{}", dc.verification_uri);
+    println!("(If that doesn't open, use: https://github.com/login/device)");
+
     println!();
     println!("And enter this code:");
     println!("{}", dc.user_code);
