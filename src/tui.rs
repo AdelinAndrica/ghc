@@ -295,7 +295,9 @@ pub fn run_tui(
         match event::read()? {
             Event::Key(key) => {
                 // Keep your “double press” fix if you want it:
-                // if key.kind != crossterm::event::KeyEventKind::Press { continue; }
+                if key.kind != crossterm::event::KeyEventKind::Press {
+                    continue;
+                }
 
                 // Consistent quit keys across platforms
                 if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
