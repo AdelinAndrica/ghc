@@ -14,6 +14,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
 };
 use std::io;
+use std::time::Duration;
 
 use crate::cli::SortBy;
 use crate::models::Repo;
@@ -21,6 +22,13 @@ use crate::models::Repo;
 pub struct TuiOutput {
     pub selected: Option<Repo>,
     pub last_query: String,
+}
+
+fn drain_pending_events() -> std::io::Result<()> {
+    while event::poll(Duration::from_millis(0))? {
+        let _ = event::read()?;
+    }
+    Ok(())
 }
 
 fn sort_label(sort: SortBy) -> &'static str {
@@ -129,6 +137,8 @@ pub fn run_tui(
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend).context("Terminal init failed")?;
     terminal.clear().ok();
+
+    drain_pending_events().ok();
 
     let mut selected_idx: usize = 0;
     let mut query = initial_query;
@@ -288,8 +298,7 @@ pub fn run_tui(
                 // if key.kind != crossterm::event::KeyEventKind::Press { continue; }
 
                 // Consistent quit keys across platforms
-                if (key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL))
-                {
+                if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
                     break;
                 }
 

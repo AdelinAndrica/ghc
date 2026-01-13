@@ -1,11 +1,12 @@
 // src/auth.rs
-use anyhow::{Context, anyhow};
+use crate::models::{DeviceCodeResponse, StoredAuth, TokenErrResponse, TokenOkResponse};
+use anyhow::{Context, Result, anyhow};
+
 use directories::ProjectDirs;
 use reqwest::header::{ACCEPT, HeaderMap, HeaderValue, USER_AGENT};
+use serde::{Deserialize, Serialize};
 use std::{fs, path::PathBuf};
 use tokio::time::{Duration, sleep};
-
-use crate::models::{DeviceCodeResponse, StoredAuth, TokenErrResponse, TokenOkResponse};
 
 const DEFAULT_GITHUB_CLIENT_ID: &str = "Ov23liadwk2DQHKgANja";
 
@@ -88,6 +89,38 @@ pub fn resolve_token() -> anyhow::Result<String> {
     Err(anyhow!(
         "Not authenticated. Run `ghc login` or set GITHUB_TOKEN."
     ))
+}
+
+#[derive(Debug, Serialize, Deserialize, Default)]
+struct Settings {
+    last_query: String,
+}
+
+fn settings_path() -> Result<PathBuf> {
+    let proj = ProjectDirs::from("com", "ghc", "ghc")
+        .ok_or_else(|| anyhow!("Could not determine config directory"))?;
+    let dir = proj.config_dir();
+    fs::create_dir_all(dir)?;
+    Ok(dir.join("settings.json"))
+}
+
+pub fn load_last_query() -> Result<String> {
+    let p = settings_path()?;
+    if !p.exists() {
+        return Ok(String::new());
+    }
+    let bytes = fs::read(p)?;
+    let s: Settings = serde_json::from_slice(&bytes)?;
+    Ok(s.last_query)
+}
+
+pub fn save_last_query(q: &str) -> Result<()> {
+    let p = settings_path()?;
+    let s = Settings {
+        last_query: q.to_string(),
+    };
+    fs::write(p, serde_json::to_vec_pretty(&s)?)?;
+    Ok(())
 }
 
 pub async fn login_device_flow() -> anyhow::Result<()> {

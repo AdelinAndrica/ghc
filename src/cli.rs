@@ -18,9 +18,13 @@ pub struct Args {
     #[command(subcommand)]
     pub cmd: Option<Cmd>,
 
-    /// Clone using SSH instead of HTTPS
-    #[arg(long)]
+    /// Clone using SSH
+    #[arg(long, conflicts_with = "https")]
     pub ssh: bool,
+
+    /// Clone using HTTPS
+    #[arg(long, conflicts_with = "ssh")]
+    pub https: bool,
 
     /// Only show repos owned by the authenticated user
     #[arg(long)]
@@ -43,4 +47,32 @@ pub enum Cmd {
     AuthStatus,
     /// Remove locally stored token
     Logout,
+
+    /// Non-interactive clone mode (script-friendly)
+    ///
+    /// Example:
+    ///   ghc clone owner/repo
+    Clone {
+        /// GitHub repo in the form owner/repo
+        repo: String,
+    },
+}
+
+#[derive(Copy, Clone, Debug)]
+pub enum CloneProtocol {
+    Https,
+    Ssh,
+}
+
+impl CloneProtocol {
+    pub fn from_flags(ssh: bool, https: bool) -> Self {
+        if ssh {
+            Self::Ssh
+        } else if https {
+            Self::Https
+        } else {
+            // default
+            Self::Https
+        }
+    }
 }
